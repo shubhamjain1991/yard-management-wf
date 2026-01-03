@@ -72,6 +72,11 @@ function makeContainer(id) {
   const sizes = ["20FT", "40FT"];
   const types = ["DRY", "REEFER", "OPEN"];
   const priorities = ["NORMAL", "HIGH"];
+  const owners = ["A. Singh", "R. Patel", "M. Chen", "K. Gomez", "S. Williams", "N. Okafor"];
+  const companies = ["BlueWave Logistics", "HarborLine", "Nova Freight", "Atlas Shipping", "Summit Trade"];
+  const materials = ["Steel Coils", "Apparel", "Electronics", "Food Grade", "Auto Parts", "Building Materials"];
+  const moveIn = new Date(Date.now() - Math.floor(Math.random() * 6) * 24 * 60 * 60 * 1000);
+  const moveOut = new Date(moveIn.getTime() + (Math.floor(Math.random() * 6) + 2) * 24 * 60 * 60 * 1000);
   return {
     id,
     size: randomFrom(sizes),
@@ -79,6 +84,11 @@ function makeContainer(id) {
     priority: Math.random() < 0.2 ? "HIGH" : randomFrom(priorities),
     status: "INBOUND",
     createdAt: nowISO(),
+    ownerName: randomFrom(owners),
+    companyName: randomFrom(companies),
+    material: randomFrom(materials),
+    moveInDate: moveIn.toISOString(),
+    moveOutDate: moveOut.toISOString(),
   };
 }
 
@@ -126,6 +136,11 @@ export default function YardSlotWireframe() {
 
   const [selectedContainerId, setSelectedContainerId] = useState(null);
   const [selectedSlotId, setSelectedSlotId] = useState(null);
+  const [selectedZone, setSelectedZone] = useState(DEFAULT_CONFIG.zones[0]);
+  const [selectedBay, setSelectedBay] = useState(1);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchType, setSearchType] = useState("owner");
+  const [searchQuery, setSearchQuery] = useState("");
 
   // Recompute changed slots live
   const changedSlots = useMemo(() => computeChangedSlots(layout, prevSig), [layout, prevSig]);
@@ -135,6 +150,15 @@ export default function YardSlotWireframe() {
   useEffect(() => saveLS(LS_KEYS.INBOUND, inboundIds), [inboundIds]);
   useEffect(() => saveLS(LS_KEYS.LAYOUT, layout), [layout]);
   useEffect(() => saveLS(LS_KEYS.PREV_SIG, prevSig), [prevSig]);
+
+  useEffect(() => {
+    if (selectedContainerId) return;
+    const inboundFirst = inboundIds[0];
+    const containerIds = Object.keys(containers);
+    const fallback = containerIds.length ? containerIds[0] : null;
+    const next = inboundFirst || fallback;
+    if (next) setSelectedContainerId(next);
+  }, [containers, inboundIds, selectedContainerId]);
 
   // Helpers
   function resetAll() {
@@ -262,11 +286,40 @@ export default function YardSlotWireframe() {
     setPrevSig(next);
   }
 
+  function selectContainerFromSearch(container) {
+    if (!container) return;
+    setSelectedContainerId(container.id);
+    if (container.slotId) {
+      setSelectedSlotId(container.slotId);
+      const [zone, rowPart] = container.slotId.split("-");
+      const rowNumber = Number(rowPart?.replace("R", ""));
+      if (zone) setSelectedZone(zone);
+      if (rowNumber) setSelectedBay(rowNumber);
+    }
+    setSearchOpen(false);
+  }
+
   // KPIs
   const inboundCount = inboundIds.length;
   const inYardCount = Object.values(layout).reduce((acc, st) => acc + (st?.length || 0), 0);
   const capacity = allSlots.length * config.stackLimit;
   const utilizationPct = capacity ? Math.round((inYardCount / capacity) * 100) : 0;
+  const zoneAvailability = config.zones.map((zone) => {
+    const zoneSlots = allSlots.filter((slot) => slot.startsWith(`${zone}-`));
+    const used = zoneSlots.reduce((acc, slot) => acc + (layout[slot]?.length || 0), 0);
+    const total = zoneSlots.length * config.stackLimit;
+    return { zone, remaining: total - used, total };
+  });
+  const baySlots = useMemo(() => {
+    const rowLabel = `R${String(selectedBay).padStart(2, "0")}`;
+    return allSlots.filter((slot) => slot.startsWith(`${selectedZone}-${rowLabel}`));
+  }, [allSlots, selectedZone, selectedBay]);
+
+  function formatDate(value) {
+    if (!value) return "—";
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? "—" : date.toLocaleDateString();
+  }
 
   // UI styling
   const styles = {
@@ -282,7 +335,7 @@ export default function YardSlotWireframe() {
       cursor: "pointer",
     },
     buttonDanger: { background: "#3a1420", border: "1px solid #7b2a3f" },
-    gridWrap: { display: "grid", gridTemplateColumns: "360px 1fr", gap: 12, alignItems: "start" },
+    gridWrap: { display: "grid", gridTemplateColumns: "340px 320px 1fr", gap: 12, alignItems: "start" },
     card: { background: "#0f1a33", border: "1px solid #22355f", borderRadius: 16, padding: 12, boxShadow: "0 10px 30px rgba(0,0,0,0.25)" },
     title: { fontSize: 14, fontWeight: 700, marginBottom: 8, opacity: 0.95 },
     small: { fontSize: 12, opacity: 0.8 },
@@ -349,9 +402,59 @@ export default function YardSlotWireframe() {
       fontWeight: 800,
     },
     hint: { fontSize: 12, opacity: 0.8, marginTop: 10, lineHeight: 1.35 },
+    splitCol: { display: "grid", gridTemplateRows: "1fr 4fr", gap: 12, alignItems: "start" },
+    searchOverlay: {
+      position: "fixed",
+      inset: 0,
+      background: "rgba(6,10,20,0.72)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      zIndex: 50,
+      padding: 16,
+    },
+    searchModal: {
+      width: "min(720px, 96vw)",
+      background: "#0f1a33",
+      borderRadius: 16,
+      border: "1px solid #22355f",
+      padding: 16,
+      boxShadow: "0 16px 40px rgba(0,0,0,0.35)",
+    },
+    searchRow: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginTop: 10 },
+    input: {
+      flex: 1,
+      minWidth: 220,
+      padding: "8px 10px",
+      borderRadius: 10,
+      border: "1px solid #22355f",
+      background: "#0b1430",
+      color: "#e7eefc",
+    },
+    select: {
+      padding: "8px 10px",
+      borderRadius: 10,
+      border: "1px solid #22355f",
+      background: "#0b1430",
+      color: "#e7eefc",
+    },
+    resultItem: {
+      padding: 10,
+      borderRadius: 12,
+      border: "1px solid #22355f",
+      background: "#0b1430",
+      cursor: "pointer",
+    },
   };
 
   const selectedContainer = selectedContainerId ? containers[selectedContainerId] : null;
+  const searchText = searchQuery.trim().toLowerCase();
+  const searchResults = Object.values(containers).filter((container) => {
+    if (!searchText) return true;
+    if (searchType === "container") return container.id.toLowerCase().includes(searchText);
+    if (searchType === "company") return container.companyName?.toLowerCase().includes(searchText);
+    return container.ownerName?.toLowerCase().includes(searchText);
+  });
 
   return (
     <div style={styles.page}>
@@ -361,6 +464,7 @@ export default function YardSlotWireframe() {
         <div style={styles.pill}>In Yard: <b>{inYardCount}</b> / {capacity} ({utilizationPct}%)</div>
         <div style={styles.pill}>Changed Slots: <b>{changedSlots.size}</b></div>
 
+        <button style={styles.button} onClick={() => setSearchOpen(true)}>Search Containers</button>
         <button style={styles.button} onClick={() => pollInbound(5)}>Poll +5 Containers</button>
         <button style={styles.button} onClick={() => autoPlace(10)}>Auto-place (up to 10)</button>
         <button style={styles.button} onClick={snapshotSignatures}>Acknowledge changes</button>
@@ -424,140 +528,223 @@ export default function YardSlotWireframe() {
           </div>
         </div>
 
+        {/* MIDDLE PANEL */}
+        <div style={styles.card}>
+          <div style={styles.title}>Selected Container Information</div>
+          {selectedContainer ? (
+            <div style={{ display: "grid", gap: 10 }}>
+              <div style={styles.pill}><b>{selectedContainer.id}</b> • {selectedContainer.size} • {selectedContainer.type}</div>
+              <div style={{ display: "grid", gap: 6 }}>
+                <div style={styles.small}><b>Owner:</b> {selectedContainer.ownerName || "—"}</div>
+                <div style={styles.small}><b>Company:</b> {selectedContainer.companyName || "—"}</div>
+                <div style={styles.small}><b>Material:</b> {selectedContainer.material || "—"}</div>
+                <div style={styles.small}><b>Move-in:</b> {formatDate(selectedContainer.moveInDate)}</div>
+                <div style={styles.small}><b>Move-out:</b> {formatDate(selectedContainer.moveOutDate)}</div>
+                <div style={styles.small}><b>Status:</b> {selectedContainer.status}</div>
+                <div style={styles.small}><b>Slot:</b> {selectedContainer.slotId || "Inbound"}</div>
+              </div>
+            </div>
+          ) : (
+            <div style={styles.small}>Select a container from the list or the yard to view details.</div>
+          )}
+        </div>
+
         {/* RIGHT PANEL */}
-        <div style={styles.yard}>
+        <div style={styles.splitCol}>
           <div style={styles.card}>
-            <div style={styles.title}>Yard View (Zones → Slots)</div>
-            <div style={styles.small}>
-              Stack limit per slot: <b>{config.stackLimit}</b>. Click slot to place the selected container.
+            <div style={styles.title}>Availability by Zone</div>
+            <div style={{ display: "grid", gap: 8 }}>
+              {zoneAvailability.map((zone) => (
+                <div key={zone.zone} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div style={styles.small}>Zone {zone.zone}</div>
+                  <div style={styles.badge}>
+                    {zone.remaining} / {zone.total} available
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
 
-          {config.zones.map((zone) => {
-            const zoneSlots = allSlots.filter((s) => s.startsWith(zone + "-"));
-            // create rows
-            const rows = [];
-            for (let r = 1; r <= config.rowsPerZone; r++) {
-              const rowSlots = [];
-              for (let c = 1; c <= config.colsPerZone; c++) rowSlots.push(buildSlotId(zone, r, c));
-              rows.push(rowSlots);
-            }
-
-            return (
-              <div key={zone} style={styles.card}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-                  <div style={styles.title}>Zone {zone}</div>
-                  <div style={styles.small}>
-                    Slots: <b>{zoneSlots.length}</b>
-                  </div>
-                </div>
-
-                {rows.map((rowSlots, idx) => (
-                  <div key={idx} style={styles.zoneRow}>
-                    <div style={styles.zoneLabel}>R{String(idx + 1).padStart(2, "0")}</div>
-                    <div style={styles.zoneGrid}>
-                      {rowSlots.map((slotId) => {
-                        const stack = layout[slotId] || [];
-                        const isSelected = slotId === selectedSlotId;
-                        const isChanged = changedSlots.has(slotId);
-                        return (
-                          <div
-                            key={slotId}
-                            style={styles.slot(isSelected, isChanged)}
-                            onClick={() => {
-                              setSelectedSlotId(slotId);
-                              if (selectedContainerId) moveSelectedToSlot(slotId);
-                            }}
-                            title="Click to place/move selected container here"
-                          >
-                            {isChanged && <div style={styles.changedTag}>REARRANGED</div>}
-
-                            <div style={styles.slotTop}>
-                              <div style={styles.slotId}>{slotId}</div>
-                              <div style={styles.badge}>
-                                {stack.length}/{config.stackLimit}
-                              </div>
-                            </div>
-
-                            <div style={styles.stack}>
-                              {stack.length === 0 ? (
-                                <div style={{ fontSize: 11, opacity: 0.65 }}>Empty</div>
-                              ) : (
-                                stack.map((cid, i) => {
-                                  const active = cid === selectedContainerId;
-                                  const c = containers[cid];
-                                  return (
-                                    <div
-                                      key={cid}
-                                      style={styles.chip(active)}
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setSelectedContainerId(cid);
-                                      }}
-                                      title="Click to select this container"
-                                    >
-                                      <div style={{ fontWeight: 800 }}>{cid}</div>
-                                      <div style={styles.chipRight}>
-                                        <span style={{ opacity: 0.85 }}>{c?.size}</span>
-                                        <button
-                                          style={styles.linkBtn}
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            if (i > 0) reorderWithinSlot(slotId, i, i - 1);
-                                          }}
-                                          title="Move up"
-                                        >
-                                          ↑
-                                        </button>
-                                        <button
-                                          style={styles.linkBtn}
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            if (i < stack.length - 1) reorderWithinSlot(slotId, i, i + 1);
-                                          }}
-                                          title="Move down"
-                                        >
-                                          ↓
-                                        </button>
-                                        <button
-                                          style={styles.linkBtn}
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            removeFromSlot(slotId, cid);
-                                          }}
-                                          title="Send back to inbound"
-                                        >
-                                          ↩
-                                        </button>
-                                      </div>
-                                    </div>
-                                  );
-                                })
-                              )}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            );
-          })}
-
           <div style={styles.card}>
-            <div style={styles.title}>Simulation Notes (wireframe)</div>
-            <div style={styles.small} style={{ fontSize: 12, opacity: 0.85, lineHeight: 1.45 }}>
-              <ul>
-                <li><b>Poll</b> simulates DB filling via a periodic request.</li>
-                <li><b>Placement</b> is stubbed (first available slot). You can replace logic with your app’s placement rules.</li>
-                <li><b>Rearranged highlight</b> triggers on any slot stack change: add, remove, move, reorder.</li>
-                <li>Use <b>Acknowledge changes</b> to snapshot the current arrangement as the new baseline.</li>
-              </ul>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+              <div style={styles.title}>Yard / Slot Management</div>
+              <div style={styles.small}>
+                Stack limit: <b>{config.stackLimit}</b>
+              </div>
+            </div>
+
+            <div style={styles.searchRow}>
+              <label style={styles.small}>Zone</label>
+              <select
+                style={styles.select}
+                value={selectedZone}
+                onChange={(e) => {
+                  setSelectedZone(e.target.value);
+                  setSelectedBay(1);
+                }}
+              >
+                {config.zones.map((zone) => (
+                  <option key={zone} value={zone}>{zone}</option>
+                ))}
+              </select>
+              <label style={styles.small}>Bay</label>
+              <select
+                style={styles.select}
+                value={selectedBay}
+                onChange={(e) => setSelectedBay(Number(e.target.value))}
+              >
+                {Array.from({ length: config.rowsPerZone }, (_, idx) => idx + 1).map((bay) => (
+                  <option key={bay} value={bay}>R{String(bay).padStart(2, "0")}</option>
+                ))}
+              </select>
+            </div>
+
+            <div style={{ marginTop: 12 }}>
+              <div style={styles.small}>Virtual rack — click a slot to place the selected container.</div>
+              <div style={{ display: "grid", gap: 8, marginTop: 10, gridTemplateColumns: `repeat(${config.colsPerZone}, minmax(120px, 1fr))` }}>
+                {baySlots.map((slotId) => {
+                  const stack = layout[slotId] || [];
+                  const isSelected = slotId === selectedSlotId;
+                  const isChanged = changedSlots.has(slotId);
+                  return (
+                    <div
+                      key={slotId}
+                      style={styles.slot(isSelected, isChanged)}
+                      onClick={() => {
+                        setSelectedSlotId(slotId);
+                        if (selectedContainerId) moveSelectedToSlot(slotId);
+                      }}
+                      title="Click to place/move selected container here"
+                    >
+                      {isChanged && <div style={styles.changedTag}>REARRANGED</div>}
+
+                      <div style={styles.slotTop}>
+                        <div style={styles.slotId}>{slotId}</div>
+                        <div style={styles.badge}>
+                          {stack.length}/{config.stackLimit}
+                        </div>
+                      </div>
+
+                      <div style={styles.stack}>
+                        {stack.length === 0 ? (
+                          <div style={{ fontSize: 11, opacity: 0.65 }}>Empty</div>
+                        ) : (
+                          stack.map((cid, i) => {
+                            const active = cid === selectedContainerId;
+                            const c = containers[cid];
+                            return (
+                              <div
+                                key={cid}
+                                style={styles.chip(active)}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setSelectedContainerId(cid);
+                                }}
+                                title="Click to select this container"
+                              >
+                                <div style={{ fontWeight: 800 }}>{cid}</div>
+                                <div style={styles.chipRight}>
+                                  <span style={{ opacity: 0.85 }}>{c?.size}</span>
+                                  <button
+                                    style={styles.linkBtn}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      if (i > 0) reorderWithinSlot(slotId, i, i - 1);
+                                    }}
+                                    title="Move up"
+                                  >
+                                    ↑
+                                  </button>
+                                  <button
+                                    style={styles.linkBtn}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      if (i < stack.length - 1) reorderWithinSlot(slotId, i, i + 1);
+                                    }}
+                                    title="Move down"
+                                  >
+                                    ↓
+                                  </button>
+                                  <button
+                                    style={styles.linkBtn}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      removeFromSlot(slotId, cid);
+                                    }}
+                                    title="Send back to inbound"
+                                  >
+                                    ↩
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           </div>
         </div>
       </div>
+
+      {searchOpen && (
+        <div style={styles.searchOverlay} onClick={() => setSearchOpen(false)}>
+          <div style={styles.searchModal} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={styles.title}>Search Containers</div>
+              <button style={styles.button} onClick={() => setSearchOpen(false)}>Close</button>
+            </div>
+            <div style={styles.searchRow}>
+              <select style={styles.select} value={searchType} onChange={(e) => setSearchType(e.target.value)}>
+                <option value="owner">Owner Name</option>
+                <option value="company">Company Name</option>
+                <option value="container">Container Number</option>
+              </select>
+              <input
+                style={styles.input}
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Type to search..."
+              />
+            </div>
+
+            <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
+              {searchResults.length === 0 ? (
+                <div style={styles.small}>No containers match that search.</div>
+              ) : (
+                searchResults.map((container) => (
+                  <div
+                    key={container.id}
+                    style={styles.resultItem}
+                    onClick={() => selectContainerFromSearch(container)}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                      <div style={{ fontWeight: 800 }}>{container.id}</div>
+                      <div style={{ fontSize: 11, opacity: 0.8 }}>
+                        {container.slotId ? `Slot ${container.slotId}` : "Inbound"}
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 11, opacity: 0.8, marginTop: 4 }}>
+                      Owner: <b>{container.ownerName}</b> • Company: <b>{container.companyName}</b>
+                    </div>
+                    <div style={{ fontSize: 11, opacity: 0.75, marginTop: 4 }}>
+                      Material: <b>{container.material}</b> • Status: <b>{container.status}</b>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+            {searchType === "container" && searchResults.length > 0 && (
+              <div style={{ marginTop: 12, fontSize: 12, opacity: 0.8 }}>
+                Select a container to view its placement and metadata.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
