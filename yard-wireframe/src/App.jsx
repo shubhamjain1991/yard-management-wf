@@ -140,7 +140,7 @@ export default function YardSlotWireframe() {
   const [selectedBay, setSelectedBay] = useState(1);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchType, setSearchType] = useState("owner");
-  const [searchQuery, setSearchQuery] = useState("");
+  const [searchValue, setSearchValue] = useState("");
 
   // Recompute changed slots live
   const changedSlots = useMemo(() => computeChangedSlots(layout, prevSig), [layout, prevSig]);
@@ -159,6 +159,49 @@ export default function YardSlotWireframe() {
     const next = inboundFirst || fallback;
     if (next) setSelectedContainerId(next);
   }, [containers, inboundIds, selectedContainerId]);
+
+  useEffect(() => {
+    const hasData =
+      Object.keys(containers).length > 0 ||
+      inboundIds.length > 0 ||
+      Object.values(layout).some((stack) => stack.length > 0);
+    if (hasData) return;
+
+    const seededContainers = {};
+    const seededInbound = [];
+    const seededLayout = {};
+    for (const slot of allSlots) seededLayout[slot] = [];
+
+    const total = 12;
+    for (let i = 0; i < total; i++) {
+      let id = randomId("CONT");
+      while (seededContainers[id]) id = randomId("CONT");
+      seededContainers[id] = makeContainer(id);
+      seededInbound.unshift(id);
+    }
+
+    const slotsIterator = allSlots[Symbol.iterator]();
+    let nextSlot = slotsIterator.next();
+    while (seededInbound.length > 0 && !nextSlot.done) {
+      const slotId = nextSlot.value;
+      const stack = seededLayout[slotId];
+      while (stack.length < config.stackLimit && seededInbound.length > 0) {
+        const cid = seededInbound.pop();
+        stack.push(cid);
+        seededContainers[cid] = {
+          ...seededContainers[cid],
+          status: "IN_YARD",
+          placedAt: nowISO(),
+          slotId,
+        };
+      }
+      nextSlot = slotsIterator.next();
+    }
+
+    setContainers(seededContainers);
+    setInboundIds(seededInbound);
+    setLayout(seededLayout);
+  }, []);
 
   // Helpers
   function resetAll() {
@@ -438,6 +481,19 @@ export default function YardSlotWireframe() {
       background: "#0b1430",
       color: "#e7eefc",
     },
+    tableWrap: { marginTop: 12, overflowX: "auto" },
+    table: { width: "100%", borderCollapse: "collapse", fontSize: 12 },
+    th: { textAlign: "left", padding: "8px 10px", borderBottom: "1px solid #22355f", fontWeight: 700, whiteSpace: "nowrap" },
+    td: { padding: "8px 10px", borderBottom: "1px solid #16223c", whiteSpace: "nowrap" },
+    rowButton: {
+      padding: "4px 8px",
+      borderRadius: 8,
+      border: "1px solid #22355f",
+      background: "#0b1430",
+      color: "#e7eefc",
+      cursor: "pointer",
+      fontSize: 10,
+    },
     resultItem: {
       padding: 10,
       borderRadius: 12,
@@ -448,12 +504,33 @@ export default function YardSlotWireframe() {
   };
 
   const selectedContainer = selectedContainerId ? containers[selectedContainerId] : null;
-  const searchText = searchQuery.trim().toLowerCase();
+  const searchOptions = useMemo(() => {
+    const values = new Set();
+    for (const container of Object.values(containers)) {
+      if (searchType === "container" && container.id) values.add(container.id);
+      if (searchType === "company" && container.companyName) values.add(container.companyName);
+      if (searchType === "owner" && container.ownerName) values.add(container.ownerName);
+    }
+    return Array.from(values).sort((a, b) => a.localeCompare(b));
+  }, [containers, searchType]);
+
+  useEffect(() => {
+    if (!searchOpen) return;
+    if (!searchOptions.length) {
+      setSearchValue("");
+      return;
+    }
+    if (!searchOptions.includes(searchValue)) {
+      setSearchValue(searchOptions[0]);
+    }
+  }, [searchOpen, searchOptions, searchValue]);
+
+  const searchValueNormalized = searchValue.trim().toLowerCase();
   const searchResults = Object.values(containers).filter((container) => {
-    if (!searchText) return true;
-    if (searchType === "container") return container.id.toLowerCase().includes(searchText);
-    if (searchType === "company") return container.companyName?.toLowerCase().includes(searchText);
-    return container.ownerName?.toLowerCase().includes(searchText);
+    if (!searchValueNormalized) return false;
+    if (searchType === "container") return container.id.toLowerCase() === searchValueNormalized;
+    if (searchType === "company") return container.companyName?.toLowerCase() === searchValueNormalized;
+    return container.ownerName?.toLowerCase() === searchValueNormalized;
   });
 
   return (
@@ -703,43 +780,99 @@ export default function YardSlotWireframe() {
                 <option value="company">Company Name</option>
                 <option value="container">Container Number</option>
               </select>
-              <input
-                style={styles.input}
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Type to search..."
-              />
+              <select
+                style={styles.select}
+                value={searchValue}
+                onChange={(e) => setSearchValue(e.target.value)}
+              >
+                {searchOptions.length === 0 ? (
+                  <option value="">No options available</option>
+                ) : (
+                  searchOptions.map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))
+                )}
+              </select>
             </div>
 
             <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
-              {searchResults.length === 0 ? (
+              {!searchValue && <div style={styles.small}>Select a search value to view results.</div>}
+              {searchValue && searchResults.length === 0 && (
                 <div style={styles.small}>No containers match that search.</div>
-              ) : (
-                searchResults.map((container) => (
-                  <div
-                    key={container.id}
-                    style={styles.resultItem}
-                    onClick={() => selectContainerFromSearch(container)}
-                  >
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                      <div style={{ fontWeight: 800 }}>{container.id}</div>
-                      <div style={{ fontSize: 11, opacity: 0.8 }}>
-                        {container.slotId ? `Slot ${container.slotId}` : "Inbound"}
-                      </div>
-                    </div>
-                    <div style={{ fontSize: 11, opacity: 0.8, marginTop: 4 }}>
-                      Owner: <b>{container.ownerName}</b> • Company: <b>{container.companyName}</b>
-                    </div>
-                    <div style={{ fontSize: 11, opacity: 0.75, marginTop: 4 }}>
-                      Material: <b>{container.material}</b> • Status: <b>{container.status}</b>
+              )}
+              {searchValue && searchType === "container" && searchResults[0] && (
+                <div style={styles.resultItem}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                    <div style={{ fontWeight: 800 }}>{searchResults[0].id}</div>
+                    <div style={{ fontSize: 11, opacity: 0.8 }}>
+                      {searchResults[0].slotId ? `Slot ${searchResults[0].slotId}` : "Inbound"}
                     </div>
                   </div>
-                ))
+                  <div style={{ fontSize: 11, opacity: 0.8, marginTop: 4 }}>
+                    Owner: <b>{searchResults[0].ownerName}</b> • Company: <b>{searchResults[0].companyName}</b>
+                  </div>
+                  <div style={{ fontSize: 11, opacity: 0.75, marginTop: 4 }}>
+                    Material: <b>{searchResults[0].material}</b> • Status: <b>{searchResults[0].status}</b>
+                  </div>
+                  <div style={{ fontSize: 11, opacity: 0.75, marginTop: 4 }}>
+                    Check-in: <b>{formatDate(searchResults[0].moveInDate)}</b> • Check-out:{" "}
+                    <b>{formatDate(searchResults[0].moveOutDate)}</b>
+                  </div>
+                  <div style={{ marginTop: 8 }}>
+                    <button style={styles.rowButton} onClick={() => selectContainerFromSearch(searchResults[0])}>
+                      Focus container
+                    </button>
+                  </div>
+                </div>
+              )}
+              {searchValue && searchType !== "container" && searchResults.length > 0 && (
+                <div style={styles.tableWrap}>
+                  <table style={styles.table}>
+                    <thead>
+                      <tr>
+                        <th style={styles.th}>Container ID</th>
+                        <th style={styles.th}>Owner</th>
+                        <th style={styles.th}>Company</th>
+                        <th style={styles.th}>Material</th>
+                        <th style={styles.th}>Type</th>
+                        <th style={styles.th}>Size</th>
+                        <th style={styles.th}>Check-in</th>
+                        <th style={styles.th}>Check-out</th>
+                        <th style={styles.th}>Status</th>
+                        <th style={styles.th}>Slot</th>
+                        <th style={styles.th}>Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {searchResults.map((container) => (
+                        <tr key={container.id}>
+                          <td style={styles.td}>{container.id}</td>
+                          <td style={styles.td}>{container.ownerName}</td>
+                          <td style={styles.td}>{container.companyName}</td>
+                          <td style={styles.td}>{container.material}</td>
+                          <td style={styles.td}>{container.type}</td>
+                          <td style={styles.td}>{container.size}</td>
+                          <td style={styles.td}>{formatDate(container.moveInDate)}</td>
+                          <td style={styles.td}>{formatDate(container.moveOutDate)}</td>
+                          <td style={styles.td}>{container.status}</td>
+                          <td style={styles.td}>{container.slotId || "Inbound"}</td>
+                          <td style={styles.td}>
+                            <button style={styles.rowButton} onClick={() => selectContainerFromSearch(container)}>
+                              Focus
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               )}
             </div>
             {searchType === "container" && searchResults.length > 0 && (
               <div style={{ marginTop: 12, fontSize: 12, opacity: 0.8 }}>
-                Select a container to view its placement and metadata.
+                Container metadata is shown above. Use “Focus container” to jump to its slot.
               </div>
             )}
           </div>
